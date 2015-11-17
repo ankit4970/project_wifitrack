@@ -4,21 +4,22 @@ import sys, getopt
 import re
 
 """
+@Author: Preet
 This parses the Vector DBC file to generate code to marshal and unmarshal DBC defined messages
 
-Use Python (3.5 was tested to work)
-python dbc_parse.py -i 243.dbc -s MOTOR > generated_code.c
-Generate all code: dbc_parse.py -i 243.dbc -s MOTOR -a all
-Generate all code with big endian: dbc_parse.py -i 243.dbc -s DRIVER -a all -b big > generated.h
+Use Python (I used Python 3.5)
+python dbc_parse.py -i 243.dbc -s MOTOR
+Generate all code: dbc_parse.py -i 243.dbc -s MOTOR -a all > generated.h
 
 TODO:
+    - More testing
     - Handle muxed CAN messages
     - Handle "FieldType" as enumeration
 """
 
 
 class Signal(object):
-    def __init__(self, name, bit_start, bit_size, is_unsigned, scale, offset, min_val, max_val, recipients):
+    def __init__(self, name, bit_start, bit_size, is_unsigned, scale, offset, min_val, max_val, recipients, mux):
         self.name = name
         self.bit_start = int(bit_start)
         self.bit_size = int(bit_size)
@@ -34,6 +35,12 @@ class Signal(object):
         self.max_val_str = max_val
 
         self.recipients = recipients
+        self.mux = mux
+        if self.mux == '':
+            self.mux = '__NO__MUX__'
+
+    def is_muxed(self):
+        return '__NO__MUX__' != self.mux
 
     def get_code_var_type(self):
         if '.' in self.scale_str:
@@ -56,10 +63,14 @@ class Signal(object):
 
     def get_signal_code(self):
         code = ""
-        code += "    " + self.get_code_var_type() + " " + self.name + ";"
+        code += "    " + self.get_code_var_type() + " " + self.name
+        if self.bit_size <= 4:
+             code += " : " + str(self.bit_size) + ";"
+        else:
+             code += ";"
 
         # Align the start of the comments
-        for i in range(len(code), 40):
+        for i in range(len(code), 45):
             code += " "
 
         # Comment with Min/Max
@@ -124,10 +135,9 @@ class Signal(object):
             else:
                 bits_in_this_byte = remaining
 
-            code += ("    bits_from_byte = ((bytes[" + str(byte_num) + "] >> " + str(bit_pos % 8) + ")")
-            code += (" & 0x" + format(2 ** bits_in_this_byte - 1, '02x') + ")")
-            code += ("; ///< " + str(bits_in_this_byte) + " bit(s) from B" + str(bit_pos) + "\n")
-            code += ("    raw_signal    |= (bits_from_byte << " + str(bit_count) + ");\n")
+            code += ("    raw_signal |= ((uint64_t)((bytes[" + str(byte_num) + "] >> " + str(bit_pos % 8) + ")")
+            code += (" & 0x" + format(2 ** bits_in_this_byte - 1, '02x') + ")) << " + str(bit_count) + ";")
+            code += (" ///< " + str(bits_in_this_byte) + " bit(s) from B" + str(bit_pos) + "\n")
             byte_num += 1
 
             bit_pos += bits_in_this_byte
@@ -135,7 +145,10 @@ class Signal(object):
             bit_count += bits_in_this_byte
 
         # Decode/get should multiply then add the offset
-        code += ("    to->" + self.name + " = (raw_signal * " + str(self.scale) + ") + (" + self.offset_str + ");\n")
+        sig_name = self.name
+        if self.is_muxed() and self.mux != "M":
+            sig_name = self.mux + "." + self.name
+        code += ("    to->" + sig_name + " = (raw_signal * " + str(self.scale) + ") + (" + self.offset_str + ");\n")
 
         return code
 
@@ -164,19 +177,70 @@ class Message(object):
                 return True
         return False
 
+    def contains_muxed_signals(self):
+        for s in self.signals:
+            if s.is_muxed():
+                return True
+        return False
+
+    def get_muxes(self):
+        muxes = []
+        for s in self.signals:
+            if s.is_muxed() and s.mux not in muxes:
+                muxes.append(s.mux)
+        return muxes
+
+    def get_mux_index_signal(self):
+        for s in self.signals:
+            if s.is_muxed() and s.mux == "M":
+                return s
+        return ""
+
+    # TODO: Do not generate this struct if we are not the recipient of any of the signals of this MUX
+    def get_struct_for_mux(self, mux):
+        code = '\n'
+        code += ("/// Struct for MUX: " + mux + "\n")
+        code += ("typedef struct {\n")
+        for s in self.signals:
+            if s.mux == mux:
+                code += (s.get_signal_code())
+        code += ("\n    mia_info_t mia_info;")
+        code += ("\n} " + self.get_struct_name()[:-2] + "_" + str(mux) + "_t;\n")
+        return code
+
     def gen_converted_struct(self, self_node):
         code = ''
         if False == self.is_recipient_of_at_least_one_sig(self_node) and self.sender != self_node:
             code = ("\n/// Not generating '" + self.get_struct_name() + "' since we are not the sender or a recipient of any of its signals")
-            return code
+        elif self.contains_muxed_signals():
+            # MUX'd data structures
+            code = ("/// @{ MUX'd message: " + self.name + "\n")
+            muxes = self.get_muxes()
+            for m in muxes[1:]:
+                code += self.get_struct_for_mux(m)
 
-        code += ("\n/// Message: " + self.name + " from '" + self.sender + "', DLC: " + self.dlc + " byte(s), MID: " + self.mid + "\n")
-        code += ("typedef struct {\n")
-        for s in self.signals:
-            code += (s.get_signal_code())
+            # Parent data structure
+            code += ("\n/// Struct with all the child MUX'd signals\n")
+            code += ("typedef struct {\n")
+            for s in self.signals:
+                if not s.is_muxed() or s.mux == "M":
+                    code += (s.get_signal_code())
+            code += ("\n")
+            for m in muxes[1:]:
+                code += ("    " + self.get_struct_name()[:-2] + "_" + str(m) + "_t " + str(m) + "; ///< MUX'd structure\n")
+            code += ("} " + self.get_struct_name() + ";\n")
 
-        code += ("\n    mia_info_t mia_info;")
-        code += ("\n} " + self.get_struct_name() + ";\n")
+            code += ("/// @} MUX'd message\n")
+        else:
+            code += ("\n/// Message: " + self.name + " from '" + self.sender + "', DLC: " + self.dlc + " byte(s), MID: " + self.mid + "\n")
+            code += ("typedef struct {\n")
+            for s in self.signals:
+                if self_node in s.recipients or self.sender == self_node:
+                    code += (s.get_signal_code())
+
+            code += ("\n    mia_info_t mia_info;")
+            code += ("\n} " + self.get_struct_name() + ";\n")
+
         return code
 
     def get_encode_code(self):
@@ -208,14 +272,39 @@ class Message(object):
         code += ("        return !success;\n")
         code += ("    }\n")
         code += ("    uint64_t raw_signal;\n")
-        code += ("    uint64_t bits_from_byte;\n")
         code += ("    const uint8_t *bytes = (const uint8_t*) from;\n")
 
-        for s in self.signals:
-            code += s.get_decode_code()
+        if self.contains_muxed_signals():
+            # Decode the Mux
+            muxed_sig = self.get_mux_index_signal()
+            code += ("\n    // Decode the MUX\n")
+            code += (muxed_sig.get_decode_code()[1:])
 
-        code += ("\n")
-        code += ("    to->mia_info.mia_counter_ms = 0; ///< Reset the MIA counter\n")
+            # Decode non Mux'd signal(s)
+            code += ("\n    // Decode the NON MUX'd signals\n")
+            code += ("    {\n")
+            for s in self.signals:
+                if not s.is_muxed():
+                    sig_code = s.get_decode_code()[1:]
+                    sig_code = sig_code.replace("    ", "        ")
+                    code += sig_code
+            code += ("    }\n\n")
+
+            # Decode the Mux'd signal(s)
+            muxes = self.get_muxes()
+            for mux in muxes[1:]:
+                code += ("    if (" + str(mux)[1:] + " == to->" + muxed_sig.name + ") {\n")
+                for s in self.signals:
+                    if s.mux == mux:
+                        code += s.get_decode_code()[1:].replace("    ", "        ")
+                code += ("        to->" + str(mux) + ".mia_info.mia_counter_ms = 0; ///< Reset the MIA counter\n")
+                code += ("    }\n\n")
+        else:
+            for s in self.signals:
+                code += s.get_decode_code()
+            code += ("\n")
+            code += ("    to->mia_info.mia_counter_ms = 0; ///< Reset the MIA counter\n")
+
         code += ("    return success;\n")
         code += ("}\n")
         return code
@@ -300,32 +389,41 @@ def main(argv):
 
         # Signals
         if line.startswith(" SG_ "):
-            t = line.split(' ')
+            t = line[1:].split(' ')
+
+            # If this is a MUX'd symbol
+            mux = ''
+            if t[3] == ":":
+                mux = t[2]
+                line = line.replace(mux + " ", '')
+                t = line[1:].split(' ')
 
             # Split the bit start and the bit size
-            s = re.split('[|@]', t[4])
+            s = re.split('[|@]', t[3])
             bit_start = s[0]
             bit_size = s[1]
             is_unsigned = '+' in s[2]
 
             # Split (0.1,1) to two tokens by removing the ( and the )
-            s = t[5][1:-1].split(',')
+            s = t[4][1:-1].split(',')
             scale = s[0]
             offset = s[1]
 
             # Split the [0|0] to min and max
-            s = t[6][1:-1].split('|')
+            s = t[5][1:-1].split('|')
             min_val = s[0]
             max_val = s[1]
 
-            recipients = t[8].strip('\n').split(',')
+            recipients = t[7].strip('\n').split(',')
 
             # Add the signal the last message object
-            sig = Signal(t[2], bit_start, bit_size, is_unsigned, scale, offset, min_val, max_val, recipients)
+            sig = Signal(t[1], bit_start, bit_size, is_unsigned, scale, offset, min_val, max_val, recipients, mux)
             dbc.messages[-1].add_signal(sig)
 
     print ("/// DBC file: %s    Self node: %s" % (dbcfile, self_node))
     print ("/// This file should be included by a source file, for example: #include \"generated.c\"")
+    print ("#ifndef __GENEARTED_DBC_PARSER")
+    print ("#define __GENERATED_DBC_PARSER")
     print ("#include <stdbool.h>")
     print ("#include <stdint.h>")
     print ("\n\n")
@@ -343,8 +441,8 @@ def main(argv):
     print ("\n/// These 'externs' need to be defined in a source file of your project")
     for m in dbc.messages:
         if gen_all or m.is_recipient_of_at_least_one_sig(self_node):
-            print ("extern const uint32_t " + m.name + "__MIA_MS;")
-            print ("extern const " + m.get_struct_name() + " " + m.name + "__MIA_MSG;")
+            print (str("extern const uint32_t ").ljust(40) + (m.name + "__MIA_MS;").rjust(40))
+            print (str("extern const " + m.get_struct_name()).ljust(40) + " " + (m.name + "__MIA_MSG;").rjust(40))
 
     # Generate encode methods
     for m in dbc.messages:
@@ -364,7 +462,6 @@ def main(argv):
     for m in dbc.messages:
         if not gen_all and not m.is_recipient_of_at_least_one_sig(self_node):
             continue
-
         print ("\n/// Handle the MIA for " + m.sender + "'s '" + m.name + "' message")
         print ("/// @param   time_incr_ms  The time to increment the MIA counter with")
         print ("/// @returns true if the MIA just occurred")
@@ -387,6 +484,8 @@ def main(argv):
         print ("    }")
         print ("\n    return mia_occurred;")
         print ("}")
+
+    print ("#endif")
 
 
 if __name__ == "__main__":
