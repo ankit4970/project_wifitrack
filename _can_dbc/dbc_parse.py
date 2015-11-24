@@ -17,6 +17,7 @@ TODO:
     - Handle "FieldType" as enumeration
 """
 
+LINE_BEG = '%'
 
 class Signal(object):
     def __init__(self, name, bit_start, bit_size, is_unsigned, scale, offset, min_val, max_val, recipients, mux):
@@ -120,14 +121,13 @@ class Signal(object):
         code += ("\n")
         return code
 
-    def get_decode_code(self):
+    def get_decode_code(self, raw_sig_name, prefix=''):
         # Little and Big Endian:
         bit_pos = self.bit_start
         remaining = self.bit_size
         byte_num = int(self.bit_start / 8)
         bit_count = 0
-        code = ("\n")
-        code += ("    raw_signal = 0;\n")
+        code = ''
 
         while remaining > 0:
             if remaining > 8:
@@ -135,20 +135,21 @@ class Signal(object):
             else:
                 bits_in_this_byte = remaining
 
-            code += ("    raw_signal |= ((uint64_t)((bytes[" + str(byte_num) + "] >> " + str(bit_pos % 8) + ")")
+            code += (LINE_BEG + raw_sig_name + " |= ((uint64_t)((bytes[" + str(byte_num) + "] >> " + str(bit_pos % 8) + ")")
             code += (" & 0x" + format(2 ** bits_in_this_byte - 1, '02x') + ")) << " + str(bit_count) + ";")
             code += (" ///< " + str(bits_in_this_byte) + " bit(s) from B" + str(bit_pos) + "\n")
-            byte_num += 1
 
+            if bit_count == 0:
+                code = code.replace("|=", " =")
+
+            byte_num += 1
             bit_pos += bits_in_this_byte
             remaining -= bits_in_this_byte
             bit_count += bits_in_this_byte
 
         # Decode/get should multiply then add the offset
         sig_name = self.name
-        if self.is_muxed() and self.mux != "M":
-            sig_name = self.mux + "." + self.name
-        code += ("    to->" + sig_name + " = (raw_signal * " + str(self.scale) + ") + (" + self.offset_str + ");\n")
+        code += (prefix + sig_name + " = (" + raw_sig_name + " * " + str(self.scale) + ") + (" + self.offset_str + ");\n")
 
         return code
 
@@ -197,10 +198,12 @@ class Message(object):
         return ""
 
     # TODO: Do not generate this struct if we are not the recipient of any of the signals of this MUX
-    def get_struct_for_mux(self, mux):
+    def get_struct_for_mux(self, mux, non_muxed_signals):
         code = '\n'
         code += ("/// Struct for MUX: " + mux + "\n")
         code += ("typedef struct {\n")
+        code += non_muxed_signals
+
         for s in self.signals:
             if s.mux == mux:
                 code += (s.get_signal_code())
@@ -213,19 +216,23 @@ class Message(object):
         if False == self.is_recipient_of_at_least_one_sig(self_node) and self.sender != self_node:
             code = ("\n/// Not generating '" + self.get_struct_name() + "' since we are not the sender or a recipient of any of its signals")
         elif self.contains_muxed_signals():
+            # Non Muxed signals in this struct, exclude the MUXED index
+            non_muxed_signals = ''
+            for s in self.signals:
+                if not s.is_muxed() and not s.mux == "M":
+                    non_muxed_signals += (s.get_signal_code())
+
             # MUX'd data structures
             code = ("/// @{ MUX'd message: " + self.name + "\n")
             muxes = self.get_muxes()
             for m in muxes[1:]:
-                code += self.get_struct_for_mux(m)
+                code += self.get_struct_for_mux(m, non_muxed_signals)
 
             # Parent data structure
             code += ("\n/// Struct with all the child MUX'd signals\n")
             code += ("typedef struct {\n")
-            for s in self.signals:
-                if not s.is_muxed() or s.mux == "M":
-                    code += (s.get_signal_code())
-            code += ("\n")
+
+            # Child struct instances of the Mux'd signals
             for m in muxes[1:]:
                 code += ("    " + self.get_struct_name()[:-2] + "_" + str(m) + "_t " + str(m) + "; ///< MUX'd structure\n")
             code += ("} " + self.get_struct_name() + ";\n")
@@ -261,7 +268,22 @@ class Message(object):
         code += ("}\n")
         return code
 
+    def get_non_mux_signal_decode_code(self, raw_sig_name, prefix=''):
+        code = ''
+        for s in self.signals:
+            if not s.is_muxed():
+                code += s.get_decode_code(raw_sig_name, prefix)
+        return code
+
+    def get_signal_decode_code_for_mux(self, mux, raw_sig_name, prefix=''):
+        code = ''
+        for s in self.signals:
+            if s.mux == mux:
+                code += s.get_decode_code(raw_sig_name, prefix)
+        return code
+
     def get_decode_code(self):
+        raw_sig_name = "raw"
         code = ''
         code += ("\n/// Decode " + self.sender + "'s '" + self.name + "' message\n")
         code += ("/// @param hdr  The header of the message to validate its DLC and MID; this can be NULL to skip this check\n")
@@ -271,41 +293,45 @@ class Message(object):
         code += ("    if (NULL != hdr && (hdr->dlc != " + self.get_struct_name()[:-2] + "_HDR.dlc || hdr->mid != " + self.get_struct_name()[:-2] + "_HDR.mid)) {\n")
         code += ("        return !success;\n")
         code += ("    }\n")
-        code += ("    uint64_t raw_signal;\n")
-        code += ("    const uint8_t *bytes = (const uint8_t*) from;\n")
+        code += ("    uint64_t " + raw_sig_name + ";\n")
+        code += ("    const uint8_t *bytes = (const uint8_t*) from;\n\n")
 
         if self.contains_muxed_signals():
-            # Decode the Mux
+            # Decode the Mux and store it into it own variable type
             muxed_sig = self.get_mux_index_signal()
-            code += ("\n    // Decode the MUX\n")
-            code += (muxed_sig.get_decode_code()[1:])
-
-            # Decode non Mux'd signal(s)
-            code += ("\n    // Decode the NON MUX'd signals\n")
-            code += ("    {\n")
-            for s in self.signals:
-                if not s.is_muxed():
-                    sig_code = s.get_decode_code()[1:]
-                    sig_code = sig_code.replace("    ", "        ")
-                    code += sig_code
-            code += ("    }\n\n")
+            code += ("    // Decode the MUX\n")
+            code += (muxed_sig.get_decode_code(raw_sig_name).replace(LINE_BEG, "    ")).replace(muxed_sig.name, "    const " + muxed_sig.get_code_var_type() + " MUX")
+            code += ("\n")
 
             # Decode the Mux'd signal(s)
             muxes = self.get_muxes()
             for mux in muxes[1:]:
-                code += ("    if (" + str(mux)[1:] + " == to->" + muxed_sig.name + ") {\n")
-                for s in self.signals:
-                    if s.mux == mux:
-                        code += s.get_decode_code()[1:].replace("    ", "        ")
-                code += ("        to->" + str(mux) + ".mia_info.mia_counter_ms = 0; ///< Reset the MIA counter\n")
-                code += ("    }\n\n")
+                prefix = "%to->" + mux + "."
+
+                # Each MUX'd message may also have non muxed signals:
+                non_mux_code = self.get_non_mux_signal_decode_code(raw_sig_name, prefix)
+                mux_code = self.get_signal_decode_code_for_mux(mux, raw_sig_name, prefix)
+
+                if mux == muxes[1]:
+                    code += ("    if (" + str(mux)[1:] + " == MUX) {\n")
+                else:
+                    code += ("    else if (" + str(mux)[1:] + " == MUX) {\n")
+
+                if non_mux_code != '':
+                    code += "        // Non Muxed signals (part of all MUX'd structures)\n"
+                    code += non_mux_code.replace(LINE_BEG, "        ")
+                    code += "\n"
+                code += mux_code.replace(LINE_BEG, "        ")
+
+                code += ("\n        to->" + str(mux) + ".mia_info.mia_counter_ms = 0; ///< Reset the MIA counter\n")
+                code += ("    }\n")
+            code += "    else {\n        return !success;\n    }\n"
         else:
-            for s in self.signals:
-                code += s.get_decode_code()
+            code += self.get_non_mux_signal_decode_code(raw_sig_name, "    to->").replace(LINE_BEG, "    ")
             code += ("\n")
             code += ("    to->mia_info.mia_counter_ms = 0; ///< Reset the MIA counter\n")
 
-        code += ("    return success;\n")
+        code += ("\n    return success;\n")
         code += ("}\n")
         return code
 
