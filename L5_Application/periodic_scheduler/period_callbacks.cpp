@@ -34,8 +34,16 @@
 
 
 
-/// This is the stack size used for each of the period tasks
+/// This is the stack size used for each of the period tasks (1Hz, 10Hz, 100Hz, and 1000Hz)
 const uint32_t PERIOD_TASKS_STACK_SIZE_BYTES = (512 * 4);
+
+/**
+ * This is the stack size of the dispatcher task that triggers the period tasks to run.
+ * Minimum 1500 bytes are needed in order to write a debug file if the period tasks overrun.
+ * This stack size is also used while calling the period_init() and period_reg_tlm(), and if you use
+ * printf inside these functions, you need about 1500 bytes minimum
+ */
+const uint32_t PERIOD_DISPATCHER_TASK_STACK_SIZE_BYTES = (512 * 3);
 
 /// Called once before the RTOS is started, this is a good place to initialize things once
 bool period_init(void)

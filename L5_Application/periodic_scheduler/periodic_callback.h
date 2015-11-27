@@ -28,8 +28,10 @@ extern "C" {
 
 
 
-/// Stack size of each of the period tasks
+/// @{ @see period_callbacks.cpp for more info
 extern const uint32_t PERIOD_TASKS_STACK_SIZE_BYTES;
+extern const uint32_t PERIOD_DISPATCHER_TASK_STACK_SIZE_BYTES;
+/// @}
 
 bool period_init(void);
 bool period_reg_tlm(void);
