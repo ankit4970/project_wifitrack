@@ -394,7 +394,7 @@ class DBC(object):
 
     def gen_file_header(self):
         code = ''
-        code += ("/// DBC file: %s    Self node: %s\n" % (self.name, self.self_node))
+        code += ("/// DBC file: %s    Self node: '%s'\n" % (self.name, self.self_node))
         code += ("/// This file can be included by a source file, for example: #include \"generated.h\"\n")
         code += ("#ifndef __GENEARTED_DBC_PARSER\n")
         code += ("#define __GENERATED_DBC_PARSER\n")
@@ -422,7 +422,7 @@ class DBC(object):
                     code += "typedef enum {\n"
                     for key in s.enum_info:
                         code += "    " + key + " = " + s.enum_info[key] + ",\n"
-                    code += "} " + s.name + "_E ;"
+                    code += "} " + s.name + "_E ;\n"
         code += "\n"
         return code
 
@@ -495,9 +495,9 @@ class DBC(object):
 
 
 def main(argv):
-    dbcfile = '243.dbc'
-    self_node = 'DRIVER'
-    gen_all = False  # TODO REVERT
+    dbcfile = '243.dbc'     # Default value unless overriden
+    self_node = 'DRIVER'    # Default value unless overriden
+    gen_all = False
     big_endian = False
 
     try:
@@ -582,7 +582,7 @@ def main(argv):
             enum_name = t[2]
             pairs = {}
             t = t[3:]
-            for i in range(0, len(t)/2):
+            for i in range(0, int(len(t)/2)):
                 pairs[t[i*2+1].replace('"', '').replace(';\n', '')] = t[i*2]
 
             # Locate the message and the signal whom this enumeration type belongs to
@@ -632,7 +632,7 @@ def main(argv):
     # Generate decode methods
     for m in dbc.messages:
         if not gen_all and not m.is_recipient_of_at_least_one_sig(self_node):
-            print ("\n/// Not generating code for " + m.get_struct_name()[:-2] + "_decode() since we are not the recipient of any of its signals")
+            print ("\n/// Not generating code for " + m.get_struct_name()[:-2] + "_decode() since '" + self_node + "' is not the recipient of any of the signals")
         else:
             print (m.get_decode_code())
 
