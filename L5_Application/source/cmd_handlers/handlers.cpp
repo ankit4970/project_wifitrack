@@ -45,7 +45,7 @@
 #include "c_tlm_stream.h"
 #include "c_tlm_var.h"
 
-
+unsigned int led_State = 0;
 
 CMD_HANDLER_FUNC(taskListHandler)
 {
@@ -131,6 +131,7 @@ CMD_HANDLER_FUNC(healthHandler)
     Storage::getFlashDrive().getDriveInfo(&total, &available);
 
     float floatTemp = TS.getFarenheit();
+    //float floatTemp = TS.getCelsius();
     int floatSig1 = (int) floatTemp;
     int floatDec1 = ((floatTemp - floatSig1) * 10);
     rtc_t bt = sys_get_boot_time();
@@ -821,3 +822,73 @@ CMD_HANDLER_FUNC(canBusHandler)
 }
 
 #endif
+
+CMD_HANDLER_FUNC(toggleTempDisplay)
+{
+
+	if(0 == TS.current_state )
+	{
+		LD.setNumber(TS.getCelsius());
+		TS.current_state = 1;
+	}
+	else
+	{
+		LD.setNumber(TS.getFarenheit());
+		TS.current_state = 0;
+	}
+
+    return true;
+}
+
+
+CMD_HANDLER_FUNC(startcount)
+{
+
+	for ( int i=0 ; i < 99 ; i++ )
+	{
+		delay_ms(100);
+		LD.setNumber(i);
+	}
+
+    output.printf("Counting done\n");
+
+    LD.setNumber(TS.getFarenheit());
+
+    //LD.setNumber(TS.getCelsius());
+
+    return true;
+}
+
+CMD_HANDLER_FUNC(turnOnLed)
+{
+
+	if(1 == led_State)
+	{
+		output.printf("LED is already ON\n");
+	}
+	else
+	{
+		/* Turn ON LED */
+		LPC_GPIO1->FIOPIN &= ~(1 << 4);
+		led_State = 1;
+	}
+
+    return true;
+}
+
+CMD_HANDLER_FUNC(turnOffLed)
+{
+
+	if(0 == led_State)
+	{
+		output.printf("LED is already OFF\n");
+	}
+	else
+	{
+		/* Turn OFF LED */
+		LPC_GPIO1->FIOPIN |= (1 << 4);
+		led_State = 0;
+	}
+
+    return true;
+}

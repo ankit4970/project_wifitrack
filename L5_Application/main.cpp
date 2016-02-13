@@ -25,6 +25,121 @@
  */
 #include "tasks.hpp"
 #include "examples/examples.hpp"
+#include <stdio.h>
+
+
+
+/**
+ * gpio task blinks led continuously on port1.0
+ */
+class gpioTask : public scheduler_task
+{
+    public:
+        gpioTask(uint8_t priority) :
+            scheduler_task("gpioTask", 2000, priority)
+        {
+            /* Nothing to init */
+        }
+
+        bool init(void)
+        {
+        	LPC_GPIO1->FIODIR |= (1 << 0);
+        	return true;
+        }
+        bool run(void *p)
+        {
+        	LPC_GPIO1->FIOPIN ^= (1 << 0);
+            vTaskDelay(100);
+        	return true;
+        }
+};
+
+/**
+ * gpio task blinks led continuously on port1.0
+ */
+class toggleLed : public scheduler_task
+{
+    public:
+		toggleLed(uint8_t priority) :
+            scheduler_task("toggleLed", 2000, priority)
+        {
+            /* Nothing to init */
+        }
+
+        bool init(void)
+        {
+        	LPC_GPIO1->FIODIR |= (1 << 4);
+        	/* Initially LED is off*/
+        	LPC_GPIO1->FIOPIN |= (1 << 4);
+
+        	return true;
+        }
+        bool run(void *p)
+        {
+            vTaskDelay(100);
+        	return true;
+        }
+};
+
+
+/**
+ *
+ */
+class switchled : public scheduler_task
+{
+    public:
+	switchled(uint8_t priority) :
+            scheduler_task("switchled", 2000, priority)
+        {
+            /* Nothing to init */
+        }
+
+        bool init(void)
+        {
+        	/* Set GPIO0.0 pin as output as LED is connected to this pin*/
+        	LPC_GPIO1->FIODIR |= (1 << 1);
+
+        	/* Set GPIO0.1 pin as input as switch is connected to this pin*/
+        	LPC_GPIO1->FIODIR &= ~(1 << 10);
+
+        	/* Initially LED is off*/
+        	LPC_GPIO1->FIOPIN |= (1 << 1);
+
+        	/*Enable interrupt on GPIO0.1*/
+        	//LPC_GPIOINT->IO0IntEnR |= (1 << 1);
+        	return true;
+        }
+        bool run(void *p)
+        {
+
+        	uint32_t temp = 0;
+
+        	temp = LPC_GPIO1->FIOPIN;
+
+        	/* Check is switch is pressed*/
+        	if((temp & ((1 << 10))) == (1 << 10))
+        	{
+        		/* turn the led on */
+        		LPC_GPIO1->FIOPIN &= ~(1 << 1);
+				vTaskDelay(100);
+
+				temp = LPC_GPIO1->FIOPIN;
+
+				/* Check if it is still pressed */
+				while((temp & ((1 << 10))) == (1 << 10)){
+					vTaskDelay(100);
+					temp = LPC_GPIO1->FIOPIN;
+				}
+
+				/* turn the led off */
+				LPC_GPIO1->FIOPIN |= (1 << 1);
+        	}
+
+        	return true;
+        }
+};
+
+
 
 /**
  * The main() creates tasks or "threads".  See the documentation of scheduler_task class at scheduler_task.hpp
@@ -52,7 +167,13 @@ int main(void)
      * such that it can save remote control codes to non-volatile memory.  IR remote
      * control codes can be learned by typing the "learn" terminal command.
      */
-    scheduler_add_task(new terminalTask(PRIORITY_HIGH));
+	scheduler_add_task(new gpioTask(PRIORITY_HIGH));
+	scheduler_add_task(new switchled(PRIORITY_HIGH));
+
+	scheduler_add_task(new toggleLed(PRIORITY_HIGH));
+
+	scheduler_add_task(new terminalTask(PRIORITY_HIGH));
+
 
     /* Consumes very little CPU, but need highest priority to handle mesh network ACKs */
     scheduler_add_task(new wirelessTask(PRIORITY_CRITICAL));

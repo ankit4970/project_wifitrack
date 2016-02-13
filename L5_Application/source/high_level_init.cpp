@@ -43,7 +43,7 @@
 #include "wireless.h"
 #include "fault_registers.h"
 #include "c_tlm_comp.h"
-
+#include "temperature_sensor.hpp"
 
 
 /// Just prints a line to separate the output printed by high level initialization
@@ -171,6 +171,7 @@ void high_level_init(void)
     }
     else {
         LD.setNumber(TS.getFarenheit());
+        TS.current_state = 0;
     }
 
     /* After Flash memory is mounted, try to set node address from a file */

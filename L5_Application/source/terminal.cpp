@@ -129,6 +129,17 @@ bool terminalTask::taskEntry()
                                                  "'telemetry get <comp. name> <name>' to get variable value\n");
     #endif
 
+
+    //@todo  added by ankit
+    cp.addHandler(startcount, "startcount", "'startcount' will display 0 to 99 on display");
+
+    cp.addHandler(toggleTempDisplay, "toggleTemp", "'toggleTemp' will toggle temperature unit on LED(Seven Segment)");
+
+
+    cp.addHandler(turnOnLed, "turnOnLed", "'turnOnLed' will toggle temperature unit on LED(Seven Segment)");
+
+    cp.addHandler(turnOffLed, "turnOffLed", "'turnOffLed' will toggle temperature unit on LED(Seven Segment)");
+
     // Initialize Interrupt driven version of getchar & putchar
     Uart0& uart0 = Uart0::getInstance();
     bool success = uart0.init(SYS_CFG_UART0_BPS, 32, SYS_CFG_UART0_TXQ_SIZE);

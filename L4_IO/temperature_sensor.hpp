@@ -33,12 +33,13 @@
 class I2C_Temp : private i2c2_device
 {
     public:
-        I2C_Temp(char addr) : i2c2_device(addr), mOffsetCelcius(0) {}
+        I2C_Temp(char addr) : i2c2_device(addr), mOffsetCelcius(0) , current_state(0) {}
         bool init();
 
         float getCelsius();   ///< @returns floating-point reading of temperature in Celsius
         float getFarenheit(); ///< @returns floating-point reading of temperature in Farenheit
         float mOffsetCelcius; ///< Temperature offset
+        int current_state;
 };
 
 /**
@@ -50,6 +51,7 @@ class TemperatureSensor : public I2C_Temp, public SingletonTemplate<TemperatureS
 {
     public:
         /* API is at I2C_Temp */
+
 
     private:
         /// Private constructor of this Singleton class

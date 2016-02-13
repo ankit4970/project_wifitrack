@@ -84,6 +84,16 @@ CMD_HANDLER_FUNC(learnIrHandler);
 /// Send a packet over the air
 CMD_HANDLER_FUNC(wirelessHandler);
 
+/// Display count from 0 to 99 on Seven Segment
+CMD_HANDLER_FUNC(startcount);
 
+/// Toggle temperature unit for display
+CMD_HANDLER_FUNC(toggleTempDisplay);
+
+/// Turn ON Led on board LED2(P1.4)
+CMD_HANDLER_FUNC(turnOnLed);
+
+/// Turn OFF Led on board LED2(P1.4)
+CMD_HANDLER_FUNC(turnOffLed);
 
 #endif /* HANDLERS_HPP_ */
