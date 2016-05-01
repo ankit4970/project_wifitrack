@@ -26,11 +26,10 @@
 #include <stdlib.h>
 #include "acceleration_sensor.hpp"
 #include <unistd.h>
-//#define	WIFI_SSID     	"The_Blue_Pill"
-//#define WIFI_PASSWD  	"TheArchitect1322260"
 
-const char wifi_ssid[32]="The_Blue_Pill";
-const char wifi_passwd[32]="TheArchitect1322260";
+
+const char wifi_ssid[32]="your_ssid";
+const char wifi_passwd[32]="your_ssid_password";
 const char wifi_serverip[32] = "10.0.0.179";
 uint16_t wifi_server_port = 8080;
 SemaphoreHandle_t gSensorSemaphore = NULL;
