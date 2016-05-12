@@ -20,7 +20,6 @@
 #include <stdint.h>
 #include <string.h>
 #include "uart3.hpp"
-//#include "esp8266.hpp"
 
 #define ESP8266_STATION 	0x01
 #define ESP8266_SOFTAP 		0x02
@@ -68,10 +67,10 @@ class esp8266_wifi : public SingletonTemplate<esp8266_wifi>
 
 		bool esp8266_isStarted(void);
 		void esp8266_mode(uint8_t mode);
-		void esp8266_putch(uint8_t);
-		bool esp8266_send(uint8_t* data,uint8_t datalen);
+		void esp8266_putch(int8_t);
+		bool esp8266_send(int8_t* data,uint8_t datalen);
 		int8_t esp8266_getch();
-		void esp8266_print(uint8_t *ptr);
+		void esp8266_print(int8_t *ptr);
 		uint8_t esp8266_waitResponse(void);
 		//uint16_t esp8266_waitFor(unsigned char *string) ;
 		bool esp8266_reset(void);
