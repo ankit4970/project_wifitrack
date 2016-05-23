@@ -28,93 +28,28 @@
 #include <unistd.h>
 #include <io.hpp>
 
-const int8_t wifi_ssid[32]="The_Blue_Pill";
-const int8_t wifi_passwd[32]="TheArchitect1322260";
-const int8_t wifi_serverip[32] = "10.0.0.179";
-const uint16_t wifi_server_port = 8080;
-SemaphoreHandle_t gSensorSemaphore = NULL;
-unsigned char ipBuffer[64]={};
-#define GPS_BAUD_RATE 9600
-typedef struct sensorData{
-	float temperature;
-	uint8_t lightPercentValue;
-	int16_t xAxis;  		///< @returns X-Axis value
-	int16_t yAxis;  		///< @returns Y-Axis value
-	int16_t zAxis;  		///< @returns Z-Axis value
-	int8_t 	position;		///< @returns Position
-	float latitude;
-	float longitude;
-	float speed_kph;
-	float heading;
-	float altitude;
-}senseordata;
+const int8_t wifi_ssid[32]="The_Blue_Pill";				/// SSID of WIFI network
+const int8_t wifi_passwd[32]="TheArchitect1322260";		/// Password for above mentioned WIFI network
+const int8_t wifi_serverip[32] = "10.0.0.201";	/// Server IP address
+const uint16_t wifi_server_port = 8080;			/// Server listening port
+char tempBuffer[256] = {0};						/// Buffer to store temporary data
+bool sdCardPresent = false;						/// Represents SD card status
+SemaphoreHandle_t gSensorSemaphore = NULL;		/// Semaphore for synchronization between sensor and WIFI task
+senseordata sensor;								/// Global structure to store sensor data
 
-esp8266_wifi& wifi = esp8266_wifi::getInstance();
-sim808_gps& gps = sim808_gps::getInstance();
+#define 	GPS_BAUD_RATE 			9600			///	SIM808 Module Initial baudrate
+#define 	ESP8266_BAUD_RATE 		115200			/// ESP8266 Module Initial baudrate
 
-senseordata sensor;
-#if 1
-/**
- * sensorTask
- */
 
-// UART3 Interrupt handler
-extern "C"
-{
-	void UART2_IRQHandler(void)
-	{
-		int i =0;
-		char data =0;
-		const uint16_t transmitterEmpty = (1 << 1);
-		const uint16_t dataAvailable    = (2 << 1);
-		const uint16_t dataTimeout      = (6 << 1);
+esp8266_wifi& wifi = esp8266_wifi::getInstance();	/// WIFI class global object
+sim808_gps& gps = sim808_gps::getInstance();		/// SIM808 class global object
 
-		uint16_t reasonForInterrupt = (LPC_UART2->IIR & 0xE);
 
-			switch (reasonForInterrupt)
-			{
-				case transmitterEmpty:
-			    	printf("transmitterEmpty\n");
-			    	break;
-
-				case dataAvailable:
-					data = LPC_UART2->RBR;
-					printf("--> %c\n",data);
-					break;
-
-				case dataTimeout:
-					printf("dataTimeout\n");
-					break;
-		}
-
-//		for(i=0;i<16;i++)
-//		{
-//			data = LPC_UART3->RBR;
-//			printf("--> %c \n",data);
-//		}
-	}
-}
-volatile uint8_t data =0;
-#if 0
-// UART3 Interrupt handler
-extern "C"
-{
-	void UART3_IRQHandler(void)
-	{
-		uint8_t IIRValue, LSRValue;
-		static uint8_t i =0;
-
-		i++;
-		while ((LPC_UART3->LSR & (1 << 0)))
-		{
-			data = LPC_UART3->RBR;
-			printf("<%d-- %c\n",i,data);
-
-		}
-
-	}
-}
-#endif
+/**************************************************************************************************
+ * @brief		sensorTask
+ * 				This task takes sensor data at regular interval and stores in a global structure.
+ * 				Then it signals WIFI task about the completion.
+**************************************************************************************************/
 class sensorTask : public scheduler_task
 {
     public:
@@ -128,6 +63,15 @@ class sensorTask : public scheduler_task
         bool init(void)
         {
 
+        	gSensorSemaphore = xSemaphoreCreateBinary();
+			delay_ms(10000);
+			gps.sim808_gpsInit(LPC_UART2, 9600);
+			delay_ms(3000);
+
+			if(!gps.enableGPS(true))
+			{
+				return false;
+			}
         	return true;
         }
 
@@ -136,27 +80,32 @@ class sensorTask : public scheduler_task
         	sensor.temperature = TS.getCelsius();
         	sensor.lightPercentValue = LS.getPercentValue();
 
-        	gps.getGPS(&sensor.latitude,&sensor.longitude,&sensor.speed_kph,&sensor.heading,&sensor.altitude);
-        	//sensor.position = LSM.getPosition();
+        	gps.getGPS(&sensor);
         	printf("Temperature is %f\n",sensor.temperature);
-        	//printf("lightPercentValue is %d\n",sensor.lightPercentValue);
-        	//printf("latitude is %f\n",sensor.latitude);
-        	//printf("longitude is %f\n",sensor.longitude);
-        	//printf("speed_kph is %f\n",sensor.speed_kph);
-        	//printf("heading is %f\n",sensor.heading);
-        	//printf("altitude is %f\n",sensor.altitude);
-        	//xSemaphoreGive(gSensorSemaphore);
+			printf("Lightvalue is %f\n",sensor.lightPercentValue);
+        	printf("Year is %d,\n",sensor.s_year);
+        	printf("Month is %d,\n",sensor.s_month);
+        	printf("Day is %d,\n",sensor.s_day);
+        	printf("Time is %d:%d:%d\n",sensor.s_hour,sensor.s_min,sensor.s_sec);
+        	printf("Temperature is %f\n",sensor.temperature);
+        	printf("Lightvalue is %f\n",sensor.lightPercentValue);
+        	printf("latitude is %f\n",sensor.latitude);
+			printf("longitude is %f\n",sensor.longitude);
 
-        	vTaskDelay(5000);
+        	xSemaphoreGive(gSensorSemaphore);
+
+        	vTaskDelay(2000);
         	return true;
         }
 
 
 };
 
-/**
- * wifiTask task
- */
+/**************************************************************************************************
+ * @brief		espWifiTask
+ * 				This task is a high priority task,it waits for the semaphore from sensor task
+ * 				Once received, it sends data to TCP server(Connected in initialization)
+**************************************************************************************************/
 class espWifiTask : public scheduler_task
 {
     public:
@@ -168,15 +117,36 @@ class espWifiTask : public scheduler_task
 
         bool init(void)
         {
-        	wifi.esp8266_init(LPC_UART3);
-        	delay_ms(1000);
-			wifi.esp8266_mode(1);
+        	printf("Wifi Initialization \n");
+        	wifi.esp8266_init(LPC_UART3,ESP8266_BAUD_RATE);
+        	delay_ms(2000);
+
+        	printf("Wifi setting mode \n");
+			if(!wifi.esp8266_mode(1))
+			{
+				printf("Wifi set mode error \n");
+				return false;
+			}
+			delay_ms(3000);
+
+			printf("Wifi connecting \n");
+			if(!wifi.esp8266_connect(wifi_ssid,wifi_passwd))
+			{
+				printf("Wifi connecting error \n");
+				return false;
+			}
+			delay_ms(5000);
+
+			printf("Wifi setting TCP Connection\n");
+			if(!wifi.esp8266_setup((uint8_t)ESP8266_TCP,wifi_serverip,wifi_server_port))
+			{
+				printf("Wifi setting TCP Connection \n");
+				return false;
+			}
 			delay_ms(2000);
-			wifi.esp8266_connect(wifi_ssid,wifi_passwd);
-			delay_ms(5000);
-			wifi.esp8266_setup((uint8_t)ESP8266_TCP,wifi_serverip,wifi_server_port);
-			delay_ms(5000);
+
 			printf("Wifi setup done \n");
+
         	return true;
 
         }
@@ -185,112 +155,62 @@ class espWifiTask : public scheduler_task
         	if (xSemaphoreTake(gSensorSemaphore, portMAX_DELAY))
         	{
 				printf("Semaphore Taken \n");
-				wifi.esp8266_send((int8_t *)"ankitgandhi",sizeof("ankitgandhi"));
+				sprintf(tempBuffer,"%d,%d,%d,%d,%d,%d,%.2f,%.2f,%.6f,%.6f\n",sensor.s_year,sensor.s_month, \
+						sensor.s_day,sensor.s_hour,sensor.s_min,sensor.s_sec,sensor.temperature,sensor.lightPercentValue,\
+						sensor.latitude,sensor.longitude);
+				wifi.esp8266_sendData((int8_t *)tempBuffer,(strlen(tempBuffer)));
+
+				if(true == sdCardPresent)
+				{
+					Storage::append("1:sensordata.txt",tempBuffer,strlen(tempBuffer),0);
+				}
+
+				memset(tempBuffer,0,sizeof(tempBuffer));
 			}
 
-        	delay_ms(5000);
         	return true;
         }
 };
 
-#endif
-
-
-#if 0
+/**************************************************************************************************
+ * @brief	main
+ * 			Main entry of the program
+ * 			Checks for the SD card presence
+ * 			Creates two tasks --> espWifiTask
+ * 						      --> sensorTask
+ * 			Starts the scheduler
+**************************************************************************************************/
 int main(void)
 {
-    qh = xQueueCreate(1, sizeof(int));
-    xTaskCreate(rx, "rx", 1024, NULL, PRIORITY_LOW, NULL);
-    xTaskCreate(tx, "tx", 1024, NULL, PRIORITY_LOW, NULL);
+	FileSystemObject& drive =Storage::getSDDrive();
+	unsigned int totalKb = 0;
+	unsigned int availKb = 0;
+	const char st = drive.mount();
+	bool mounted = (0 == st);
 
-    //xTaskCreate(tx1, "tx1", 2000, NULL, PRIORITY_LOW, NULL);
-    //xTaskCreate(tx2, "tx2", 2000, NULL, PRIORITY_MEDIUM, NULL);
-    //xTaskCreate(rx1, "rx1", 2000, NULL, PRIORITY_HIGH, NULL);
-    vTaskStartScheduler();
-
-	return 0;
-}
-#endif
-
-#if 1
-int main(void)
-{
-
-	gSensorSemaphore = xSemaphoreCreateBinary();
-	delay_ms(10000);
-	//gps.sim808_gpsInit(LPC_UART3,9600);
-	//delay_ms(1000);
-	//gps.changeBaudRate(115200);
-	//delay_ms(1000);
-	gps.sim808_gpsInit(LPC_UART3,9600);
-	delay_ms(2000);
-	if(!gps.enableGPS(true))
+	// Check if SD card is present
+	if(mounted && FR_OK == drive.getDriveInfo(&totalKb, &availKb))
 	{
-		return -1;
+		const unsigned int maxBytesForKbRange = (32 * 1024);
+		const char *size = (totalKb < maxBytesForKbRange) ? "KB" : "MB";
+		unsigned int div = (totalKb < maxBytesForKbRange) ? 1 : 1024;
+		printf("%s: OK -- Capacity %-5d%s, Available: %-5u%s\n","SD_card", totalKb/div, size, availKb/div, size);
+		sdCardPresent = true;
 	}
-	delay_ms(2000);
-
-	gps.getGPS(&sensor.latitude,&sensor.longitude,&sensor.speed_kph,&sensor.heading,&sensor.altitude);
-	//scheduler_add_task(new sensorTask(PRIORITY_MEDIUM));
-	//scheduler_add_task(new espWifiTask(PRIORITY_HIGH));
-	delay_ms(500);
-	//scheduler_start(); ///< This shouldn't return
-
-	while(1)
+	else
 	{
-		//gps.getGPS(&sensor.latitude,&sensor.longitude,&sensor.speed_kph,&sensor.heading,&sensor.altitude);
-		delay_ms(5000);
+		printf("%s: Error or not present.  Error #%i, Mounted: %s\n","SD_card", st, mounted ? "Yes" : "No");
 	}
+
+
+	scheduler_add_task(new espWifiTask(PRIORITY_HIGH));
+	scheduler_add_task(new sensorTask(PRIORITY_MEDIUM));
+
+	scheduler_start(); 				///< This shouldn't return
+
+
 	return -1;
 }
-#endif
-#if 0
-int main(void)
-{
-	char replybuffer[WIFI_RXQ_SIZE] = {0};
-	Uart3 &u3 = Uart3::getInstance();
-	u3.init(GPS_BAUD_RATE, WIFI_RXQ_SIZE, WIFI_TXQ_SIZE);
-	//scheduler_add_task(new wifiTask(Uart3::getInstance(), PRIORITY_LOW));
-
-	/* Set GPIO0.0 pin as output , GPS Reset pin is connected to this pin*/
-	LPC_GPIO0->FIODIR |= (1 << 0);
-
-	/* PIN high */
-	LPC_GPIO0->FIOPIN |= (1 << 0);
-
-	delay_ms(10);
-
-	/* pin low*/
-	LPC_GPIO0->FIOPIN &= ~(1 << 0);
-
-	delay_ms(100);
-	/* PIN high */
-	LPC_GPIO0->FIOPIN |= (1 << 0);
-
-	delay_ms(1000);
-	u3.putline("AT\r\n");
-	u3.gets(replybuffer,256);
-	printf("-->%s\n",replybuffer);
-
-	u3.putline("ATE0\r\n");
-	u3.gets(replybuffer,256);
-	printf("-->%s\n",replybuffer);
-
-	u3.putline("AT+CGNSPWR=1\r\n");
-	u3.gets(replybuffer,256);
-	printf("-->%s\n",replybuffer);
-
-	u3.putline("AT+CGNSSEQ=\"RMC\"\r\n");
-	u3.gets(replybuffer,256);
-	printf("-->%s\n",replybuffer);
 
 
-	u3.putline("AT+CGNSINF\r\n");
-	u3.gets(replybuffer,256);
-	printf("-->%s\n",replybuffer);
-
-	while(1);
-	return -1;
-}
-#endif
 

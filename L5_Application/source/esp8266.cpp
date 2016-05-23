@@ -6,30 +6,23 @@
  */
 
 #include <string.h>
+#include "lpc_sys.h"
 #include "esp8266_wifi.hpp"
 #include "utilities.h"
-/*
 
-	AT+CWJAP="The_Blue_Pill","TheArchitect1322260"
-
-	AT+CIPSTART="TCP","10.0.0.179",80
-
-	AT+CIPSEND=73
-
-	>GET /data.php?temperature=56&lightvalue=23 HTTP/1.1\r\nHost: 10.0.0.179\r\n\r\n
-
- * */
 /**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
- * Note: when using UART in BLOCKING mode, a time-out condition is used
- * 		 via defined symbol UART_BLOCKING_TIMEOUT.
+ * @brief		Initialize UART peripheral for SIM808
+ * @param[in]	UARTx	UART peripheral selected
+ *  					- LPC_UART0: UART0 peripheral
+ * 						- LPC_UART1: UART1 peripheral
+ * 						- LPC_UART2: UART2 peripheral
+ * 						- LPC_UART3: UART3 peripheral
+ * @return 		true if success
 **************************************************************************************************/
-bool esp8266_wifi::esp8266_init(LPC_UART_TypeDef *UARTx)
+bool esp8266_wifi::esp8266_init(LPC_UART_TypeDef *UARTx, uint32_t baudrate)
 {
+	uint16_t baud = 0;
+	const unsigned int pclk = sys_get_cpu_clock();
 	// Turn on UART3 module
 	LPC_SC->PCONP |= (1 << 25);
 
@@ -38,21 +31,25 @@ bool esp8266_wifi::esp8266_init(LPC_UART_TypeDef *UARTx)
 	LPC_SC->PCLKSEL1 |= (1<<18);
 
 	// Configure UART3 :8-bit character length1 :1 stop bit :Parity Disabled
-	LPC_UART3->LCR = 0x03;
+	UARTx->LCR = 0x03;
 
 	// Enable DLAB (DLAB = 1)
-	LPC_UART3->LCR |= (1<<7);
+	UARTx->LCR |= (1<<7);
 
 	// For baudrate 115200
 	//div = 48000000/16*baudRate;// = 312;
 	//divWord = 48000000/(16*115200);
+	baud = (pclk / (16 * baudrate));
 
-
-	LPC_UART3->DLL = 0x1A;
-	LPC_UART3->DLM = 0;
+	UARTx->DLL = (baud & 0xFF);
+	UARTx->DLM = (baud >> 8);
 
 	// Disabling DLAB (DLAB =0)
-	LPC_UART3->LCR &= ~(1<<7) ;
+	UARTx->LCR &= ~(1<<7) ;
+
+	// Enable & Reset FIFOs and set 4 char timeout for Rx
+	UARTx->FCR = 0x07;
+	UARTx->FCR &= ~(1<<3);
 
 	// Pin select for P4.28 TXD3 and P4.29 RXD3
 	LPC_PINCON->PINSEL9 |= ((1<<24) | (1<<25) | (1<<26) | (1<<27));
@@ -62,354 +59,338 @@ bool esp8266_wifi::esp8266_init(LPC_UART_TypeDef *UARTx)
 }
 
 /**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
- * Note: when using UART in BLOCKING mode, a time-out condition is used
- * 		 via defined symbol UART_BLOCKING_TIMEOUT.
-**************************************************************************************************/
-bool esp8266_wifi::esp8266_init_change()
+ * @brief		Receive data from UART peripheral
+ * @param[in]	rxbuf	: pointer to receive data buffer:
+ * 				buflen	: length of the buffer
+ * 				flag	: Tranfer type (Blocking or Non blocking)
+ * @return 		No of bytes received
+ **************************************************************************************************/
+uint8_t esp8266_wifi::esp_uartReceive( uint8_t *rxbuf, uint32_t buflen,TRANSFER_BLOCK_Type flag, bool multiline)
 {
+	uint32_t bytesToRecv = 0, bRecvd =0, timeOut = 0;
+	uint8_t *pChar = rxbuf;
+	uint8_t recvData = 0;
+	bytesToRecv = buflen;
 
-	// Turn on UART3 module
-	LPC_SC->PCONP |= (1 << 25);
+	// Blocking mode
+	if (BLOCKING == flag)
+	{
+		bRecvd = 0;
+		while (bytesToRecv)
+		{
+			timeOut = UART_BLOCKING_TIMEOUT;
+			while (!(mUARTx->LSR & UART_LSR_RDR))
+			{
+				if (timeOut == 0)
+					break;
+				timeOut--;
+			}
 
-	// Select clock for UART3 PCLK = CCLK
-	LPC_SC->PCLKSEL1 &= ~(2<<18);
-	LPC_SC->PCLKSEL1 |= (1<<18);
+			// Time out!
+			if(timeOut == 0)
+				break;
 
-	// Configure UART3 :8-bit character length1 :1 stop bit :Parity Disabled
-	LPC_UART3->LCR = 0x03;
+			// Get data from the buffer
+			recvData = esp8266_getch();
+			if ((recvData == 0xA) | (recvData == 0xD))
+			{
+				if (bRecvd == 0)   // the first 0x0A is ignored
+					continue;
 
-	// Enable DLAB (DLAB = 1)
-	LPC_UART3->LCR |= (1<<7);
+				if (!multiline)
+				{
+					//lTimeOut = 0;         // the second 0x0A is the end of the line
+					break;
+				}
+			}
+			(*pChar++) = recvData;
+			bytesToRecv--;
+			bRecvd++;
+		}
+	}
+	// None blocking mode
+	else
+	{
 
-	// For baudrate 9600
-	//div = 48000000/16*baudRate;// = 312;
+		bRecvd = 0;
+		while (bytesToRecv)
+		{
+			if (!(mUARTx->LSR & UART_LSR_RDR))
+			{
+				break;
+			}
+			else
+			{
+				recvData = esp8266_getch();
+				//printf("Received character is %c\n",recvData);
+				if ((recvData == 0xA) | (recvData == 0xD))
+				{
+					if (bRecvd == 0)   // the first 0x0A is ignored
+						continue;
 
-	//divWord = 48000000/(16*9600);
+					if (!multiline)
+					{
+						//lTimeOut = 0;         // the second 0x0A is the end of the line
+						break;
+					}
+				}
+				(*pChar++) = recvData;
+				bRecvd++;
+				bytesToRecv--;
+			}
+		}
+	}
 
-	// For baudrate 57600
-	LPC_UART3->DLL = 0x34;
-	LPC_UART3->DLM = 0;
+	(*pChar++) = '\0';
+	return bRecvd;
+}
 
-	// Disabling DLAB (DLAB =0)
-	LPC_UART3->LCR &= ~(1<<7) ;
+/**************************************************************************************************
+ * @brief		Receive response from ESP8266
+ * @param[in]	send	:	pointer Data to be sent
+ * 				multiline:	If multiple lines are expected in response
+ * @return 		Received data length
+ **************************************************************************************************/
+uint8_t esp8266_wifi::esp8266_getReply(int8_t *send, bool multiline)
+{
+	uint8_t readLength =0;
 
-	// Pin select for P4.28 TXD3 and P4.29 RXD3
-	LPC_PINCON->PINSEL9 |= ((1<<24) | (1<<25) | (1<<26) | (1<<27));
+	esp8266_send(send,strlen((const char *)send));
 
-	// Enable IRQ vector for UART3
-	//NVIC_EnableIRQ(UART3_IRQn);
+	delay_ms(4000);
+	readLength = esp_uartReceive(replybuffer,sizeof(replybuffer),NONE_BLOCKING, multiline);
 
-	//Enable RX interrupt
-	//LPC_UART3->IER |= 1;
+	printf("%s\n",replybuffer);
 
-    return true;
+	return readLength;
 }
 
 
 /**************************************************************************************************
- * @brief		Output a string to the ESP module.
+ * @brief		Send command and check reply
+ * @param[in]	send	:	pointer Data to be sent
+ * 				reply	:	Expected response
+ * 				multiline:	If multiple lines are expected in response
+ * @return 		true if success
+ **************************************************************************************************/
+bool esp8266_wifi::esp8266_sendCheckReply(int8_t *send, int8_t *reply,bool multiline)
+{
+	if(esp8266_getReply(send, multiline) <= 0) // added for testing
+	{
+		printf("Error in get reply\n");
+		return false;
+	}
+
+	//return true;
+	printf("replybuffer --> %s\n",replybuffer);
+	printf("reply       --> %s\n",reply);
+
+	return(strcmp((const char*)replybuffer,(const char*) reply) == 0 | strcmp((const char*)replybuffer,(const char*)"OK") == 0);
+}
+
+/**************************************************************************************************
+ * @brief		Send data to the ESP module.
  * @param[in]	ptr 	A pointer to the string to send.
- *
  * @return 		Number of bytes sent.
- *
 **************************************************************************************************/
-void esp8266_wifi::esp8266_print(int8_t *ptr)
+uint32_t esp8266_wifi::esp8266_send(int8_t *txbuf, uint8_t datalen)
 {
-    while (*ptr != 0)
-    {
-    	esp8266_putch(*ptr++);
-    }
-    return;
-}
 
-/**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
- * Note: when using UART in BLOCKING mode, a time-out condition is used
- * 		 via defined symbol UART_BLOCKING_TIMEOUT.
-**************************************************************************************************/
-uint16_t esp8266_wifi::esp8266_waitFor(uint8_t *string)
-{
-	uint8_t so_far = 0;
-	uint8_t received;
-    uint16_t counter = 0;
-    do
-    {
-        received = esp8266_getch();
-        counter++;
-        if (received == string[so_far])
-        {
-            so_far++;
-        }
-        else
-        {
-            so_far = 0;
-        }
-    } while (string[so_far] != 0);
-    return counter;
-}
+	uint32_t bRemain, bSent, timeOut;
+	int8_t *pChar = txbuf;
+	uint32_t buflen = 0;
 
-/**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
- * Note: when using UART in BLOCKING mode, a time-out condition is used
- * 		 via defined symbol UART_BLOCKING_TIMEOUT.
-**************************************************************************************************/
-unsigned char esp8266_wifi::esp8266_waitResponse(void)
-{
-	uint8_t response = 0, i =0;
-	uint8_t so_far[6] = {0,0,0,0,0,0};
-	const  uint8_t lengths[6] = {2,5,4,9,6,6};
-    const  uint8_t strings[6][16] = {"OK", "ready", "FAIL", "no change", "Linked", "Unlink"};
-    const  uint8_t responses[6] = {ESP8266_OK, ESP8266_READY, ESP8266_FAIL, ESP8266_NOCHANGE, ESP8266_LINKED, ESP8266_UNLINK};
-    uint8_t received;
+	buflen = datalen;
+	printf("sim808_send : Command is %s\n",txbuf);
+	bRemain = buflen;
 
-    bool continue_loop = true;
-    while (continue_loop)
-    {
-        received = esp8266_getch();
-        for (i = 0; i < 6; i++)
-        {
-            if (strings[i][so_far[i]] == received)
-            {
-                so_far[i]++;
-                if (so_far[i] == lengths[i])
-                {
-                    response = responses[i];
-                    continue_loop = false;
-                }
-            }
-            else
-            {
-                so_far[i] = 0;
-            }
-        }
-    }
-    return response;
+	bSent = 0;
+	while (bRemain)
+	{
+		timeOut = UART_BLOCKING_TIMEOUT;
+		// Wait for THR empty with timeout
+		while (!(mUARTx->LSR & UART_LSR_THRE))
+		{
+			if (timeOut == 0)
+				break;
+			timeOut--;
+		}
+
+		// Time out!
+		if(timeOut == 0)
+			break;
+
+		while (bRemain)
+		{
+			esp8266_putch((*pChar++));
+			bRemain--;
+			bSent++;
+		}
+	}
+	return bSent;
 }
 
 
+
 /**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
- * Note: when using UART in BLOCKING mode, a time-out condition is used
- * 		 via defined symbol UART_BLOCKING_TIMEOUT.
+ * @brief		Receive a byte from UART peripheral
+ * @return 		received byte.
 **************************************************************************************************/
 int8_t esp8266_wifi::esp8266_getch()
 {
-	return LPC_UART3->RBR;
+	return (mUARTx->RBR & UART_RBR_MASKBIT);
 }
 
 
 /**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
+ * @brief		Send a byte of data via UART peripheral
+ * @param[in]	data 	data to be sent
+ * @return 		None
 **************************************************************************************************/
 void esp8266_wifi::esp8266_putch(int8_t data)
 {
-	while(!(LPC_UART3->LSR & (1<<5)));
-	LPC_UART3->THR = data;
+	mUARTx->THR = (data & UART_THR_MASKBIT);
+	while(! (mUARTx->LSR & (1 << 6)));
 }
 
 
 /**************************************************************************************************
  * @brief		Open a TCP or UDP connection.
  * 				This sends the AT+CIPSTART command to the ESP module.
- * @param[in]	protocol: Either ESP8266_TCP or ESP8266_UDP
- * @param[in]	ip 		: The IP or hostname to connect to; as a string
+ * @param[in]	protocol: Protocol (TCP or UDP)
+ * @param[in]	ip 		: The IP or hostname to connect to(as string)
  * @param[in]	port	: The port to connect to
  * @return 		true	: If the connection is opened successfully
 **************************************************************************************************/
 bool esp8266_wifi::esp8266_setup(uint8_t protocol, const int8_t* ip, uint16_t port)
 {
-	uint8_t port_str[5] = {0};
-	esp8266_print((int8_t *)"AT+CIPSTART=\"");
-    if (protocol == ESP8266_TCP)
-    {
-        esp8266_print((int8_t *)"TCP");
-    }
-    else
-    {
-        esp8266_print((int8_t *)"UDP");
-    }
 
-    esp8266_print((int8_t *)"\",\"");
-    esp8266_print((int8_t *)ip);
-    esp8266_print((int8_t *)"\",");
+	char tempBuffer[256] = {0};
 
-    sprintf((char *)port_str, "%u", port);
+    sprintf(tempBuffer,"AT+CIPSTART=\"TCP\",\"%s\",%d\r\n",ip,port);
 
-    esp8266_print((int8_t *)port_str);
-    esp8266_print((int8_t *)"\r\n");
-    /*if (esp8266_waitResponse() != ESP8266_OK)
-    {
-        return 0;
-    }
-    if (esp8266_waitResponse() != ESP8266_LINKED)
-    {
-        return 0;
-    }*/
+	if(!esp8266_sendCheckReply((int8_t *)tempBuffer,(int8_t *) "CONNECT"))
+	{
+		printf("AT+CIPSTART error\n");
+		return false;
+	}
 
-    return 1;
-}
-
-
-/**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
-**************************************************************************************************/
-bool esp8266_wifi::esp8266_baudrate_change(uint16_t baudRate)
-{
-	uint8_t tempBuffer[6] = {0};
-	sprintf((char *)tempBuffer, "%d%s%s", baudRate,'\r','\n');
-	esp8266_print((int8_t *)tempBuffer);
-	return true;
-}
-
-
-/**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
-**************************************************************************************************/
-bool esp8266_wifi::esp8266_watchdog_disable()
-{
-	esp8266_print((int8_t *)"AT+CSYSWDTDISABLE\r\n");
-	return true;
-}
-
-
-/**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
-**************************************************************************************************/
-bool esp8266_wifi::esp8266_send(int8_t *data,uint8_t datalen)
-{
-	uint8_t length_str[6] = {0};
-    sprintf((char *)length_str, "%d", datalen);
-
-    esp8266_print((int8_t *)"AT+CIPSEND=");
-    esp8266_print((int8_t *)length_str);
-    esp8266_print((int8_t *)"\r\n");
-    delay_ms(200);
-    //while (esp8266_getch() != '>');
-    esp8266_print(data);
-    //if (esp8266_waitResponse() == ESP8266_OK)
-    {
-        //return 1;
-    }
     return true;
 }
 
 
-/**
- * Set the WiFi mode.
- *
- * ESP8266_STATION : Station mode
- * ESP8266_SOFTAP : Access point mode
- *
- * This sends the AT+CWMODE command to the ESP module.
- *
- * @param mode an ORed bitmask of ESP8266_STATION and ESP8266_SOFTAP
- */
 /**************************************************************************************************
  * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
+ * 				This sends the AT+CIPSEND command followed byte data to the ESP module.
+ * @param[in]	data 	:Pointer to Transmit buffer
+ * 				datalen	: data length
+ * @return 		true if success
 **************************************************************************************************/
-void esp8266_wifi::esp8266_mode(uint8_t mode)
+bool esp8266_wifi::esp8266_sendData(int8_t *data,uint8_t datalen)
 {
-	esp8266_print((int8_t *)"AT+CWMODE=");
-	esp8266_putch(mode + '0');
-    esp8266_print((int8_t *)"\r\n");
-    //esp8266_waitResponse();
+	char tempBuffer[256] = {0};
+    sprintf(tempBuffer,"AT+CIPSEND=%d\r\n",datalen);
+
+    esp8266_send((int8_t*)tempBuffer,(uint8_t)strlen(tempBuffer));
+
+    delay_ms(2000);
+    //while (esp8266_getch() != '>');
+
+    printf("Datalength is %d\n",datalen);
+    printf("Data is %s\n",data);
+    esp8266_send(data,datalen);
+    printf("data sent\n");
+
+    return true;
+}
+
+
+/**************************************************************************************************
+ * @brief		Set mode for ESP8266
+ * @param[in]	mode 	Mode for the esp8266
+ * @return 		true if success
+**************************************************************************************************/
+bool esp8266_wifi::esp8266_mode(uint8_t mode)
+{
+
+	esp8266_reset();
+
+	delay_ms(10000);
+
+	esp8266_flushin();
+
+	delay_ms(2000);
+	esp8266_send((int8_t *)"ATE0\r\n",strlen("ATE0\r\n"));
+
+	esp8266_flushin();
+	delay_ms(3000);
+
+    if(!esp8266_sendCheckReply((int8_t *)"AT+CWMODE=1\r\n",(int8_t *) "OK"))
+	{
+		printf("AT+CWMODE=1 error\n");
+		return false;
+	}
+
+    delay_ms(2000);
+
+    return true;
 }
 
 
 /**************************************************************************************************
  * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
+ * @param[in]	ssid 	: 	ssid of the network
+ * 				passwd 	:	Password for the network
+ * @return 		true if success
 **************************************************************************************************/
-bool esp8266_wifi::esp8266_isStarted(void)
+bool esp8266_wifi::esp8266_connect(const int8_t * ssid, const int8_t * passwd)
 {
-    esp8266_print((int8_t *)"AT\r\n");
-    return (esp8266_waitResponse() == ESP8266_OK);
-}
+	char tempBuffer[256] = {0};
 
+	sprintf(tempBuffer,"AT+CWJAP=\"%s\",\"%s\"\r\n",ssid,passwd);
 
-/**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
-**************************************************************************************************/
-uint8_t esp8266_wifi::esp8266_connect(const int8_t * ssid, const int8_t * passwd)
-{
-	esp8266_print((int8_t *)"AT+CWJAP=\"");
-	esp8266_print((int8_t *)ssid);
-	esp8266_print((int8_t *)"\",\"");
-	esp8266_print((int8_t *)passwd);
-	esp8266_print((int8_t *)"\"\r\n");
-	return 0;//esp8266_waitResponse();
+	if(!esp8266_sendCheckReply((int8_t *)tempBuffer,(int8_t *) "OK"))
+	{
+		printf("AT+CWJAP error\n");
+		return false;
+	}
+
+	return true;//esp8266_waitResponse();
 }
 
 
 /**************************************************************************************************
  * @brief		Disconnect from the access point.
  * 				This sends the AT+CWQAP command to the ESP module.
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
+ * @return 		true if success
 **************************************************************************************************/
-void esp8266_wifi::esp8266_disconnect(void)
+bool esp8266_wifi::esp8266_disconnect(void)
 {
-    esp8266_print((int8_t *)"AT+CWQAP\r\n");
-    esp8266_waitFor((uint8_t *)"OK");
+
+    if(!esp8266_sendCheckReply((int8_t *)"AT+CWQAP\r\n",(int8_t *) "OK"))
+	{
+		printf("AT+CWQAP error\n");
+		return false;
+	}
+
+    return true;
 }
 
 
 /**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- * @param[in]	txbuf 	Pointer to Transmit buffer
- *
- * @return 		Number of bytes sent.
- *
+ * @brief		Get IP assigned by the network
+ * @param[in]	ipAddr :Pointer to IP address buffer buffer
+ * @return 		None
 **************************************************************************************************/
 void esp8266_wifi::esp8266_getIp(uint8_t* ipAddr)
 {
 	uint8_t received;
 
-	esp8266_print((int8_t *)"AT+CIFSR\r\n");
+	if(esp8266_getReply((int8_t *)"AT+CIFSR\r\n") <= 0) // added for testing
+	{
+		printf("Error in get reply\n");
+		return ;
+	}
 
     do
     {
@@ -427,7 +408,7 @@ void esp8266_wifi::esp8266_getIp(uint8_t* ipAddr)
         } while (received >= '0' && received <= '9');
         received = esp8266_getch();
     }
-   // esp8266_waitFor((unsigned char *)"OK");
+
 }
 
 
@@ -459,8 +440,6 @@ bool esp8266_wifi::esp8266_read(uint8_t * data, uint16_t max_length, bool discar
 		max_length = length;
 	}
 
-	/*sprintf(store_in, "%u,%u:%c%c", length, max_length, _esp8266_getch(), _esp8266_getch());
-	return;*/
 
 	uint16_t i;
 	for (i = 0; i < max_length; i++)
@@ -482,23 +461,39 @@ bool esp8266_wifi::esp8266_read(uint8_t * data, uint16_t max_length, bool discar
 
 
 /**************************************************************************************************
- * @brief		Send a block of data via UART peripheral
- *
- * @return 		Number of bytes sent.
- *
+ * @brief		Get Firmware version of ESP module
+ * @return 		true if success
 **************************************************************************************************/
 bool esp8266_wifi::esp8266_getFirmwareVersion(void)
 {
-    esp8266_print((int8_t *)"AT+GMR\r\n");
+    if(!esp8266_sendCheckReply((int8_t *)"AT+GMR\r\n",(int8_t *) "OK"))
+	{
+		printf("AT+GMR error\n");
+		return false;
+	}
 
-    if (esp8266_waitResponse() != ESP8266_OK)
-    {
-        return false;
-    }
-
-    return (esp8266_waitResponse() == ESP8266_READY);
+    return true;
 }
 
+/**************************************************************************************************
+ * @brief		Flush input stream of UART peripheral
+ * @return 		None
+**************************************************************************************************/
+void esp8266_wifi::esp8266_flushin()
+{
+    // Read all available serial input to flush pending data.
+    uint16_t timeoutloop = 0;
+
+    while (timeoutloop++ < 40)
+    {
+        while((mUARTx->LSR & UART_LSR_RDR))
+        {
+        	esp8266_getch();
+            timeoutloop = 0;  // If char was received reset the timer
+        }
+        delay_ms(1);
+    }
+}
 
 /**************************************************************************************************
  * @brief		Restart the ESP module
@@ -506,25 +501,11 @@ bool esp8266_wifi::esp8266_getFirmwareVersion(void)
 **************************************************************************************************/
 bool esp8266_wifi::esp8266_reset(void)
 {
-	char data = 0;
-	uint8_t i =0;
-	printf("INside reset function\n");
-	esp8266_print((int8_t *)"AT+RST\r\n");
+	printf("Inside reset function\n");
 
-    //if (esp8266_waitResponse() != ESP8266_OK)
-    {
-      //  return false;
-    }
-    printf("Getting out of reset function\n");
+	esp8266_send((int8_t *)"AT+RST\r\n",strlen("AT+RST\r\n"));
 
-    data = esp8266_getch();
-    printf("Received data 1 is %c\n",data);
-
-    data = esp8266_getch();
-	printf("Received data 2 is %c\n",data);
-
-
-    return true;//(esp8266_waitResponse() == ESP8266_READY);
+    return true;
 }
 
 

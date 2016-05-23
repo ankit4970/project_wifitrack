@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include "common.hpp"
 #include "uart3.hpp"
 
 #define ESP8266_STATION 	0x01
@@ -39,13 +40,14 @@ class esp8266_wifi : public SingletonTemplate<esp8266_wifi>
 {
     public:
         //bool init();   ///< Initializes the sensor
-        bool esp8266_init(LPC_UART_TypeDef *UARTx);
+        //bool esp8266_init(LPC_UART_TypeDef *UARTx);
+        bool esp8266_init(LPC_UART_TypeDef *UARTx, uint32_t baudrate);
         bool esp8266_init_change();
         /**
         * Set the module as "client" and connects to `ssid` with `password`.
         */
-        unsigned char esp8266_connect(const int8_t * ssid, const int8_t * passwd);
-        void esp8266_disconnect(void);
+        bool esp8266_connect(const int8_t * ssid, const int8_t * passwd);
+        bool esp8266_disconnect(void);
         /**
 		* Send a `HIGH` signal to `resetPin` so that it hard resets the module.
 		*/
@@ -66,9 +68,10 @@ class esp8266_wifi : public SingletonTemplate<esp8266_wifi>
 		bool esp8266_close(const uint32_t mux_id);
 
 		bool esp8266_isStarted(void);
-		void esp8266_mode(uint8_t mode);
+		bool esp8266_mode(uint8_t mode);
+
 		void esp8266_putch(int8_t);
-		bool esp8266_send(int8_t* data,uint8_t datalen);
+		//bool esp8266_send(int8_t* data,uint8_t datalen);
 		int8_t esp8266_getch();
 		void esp8266_print(int8_t *ptr);
 		uint8_t esp8266_waitResponse(void);
@@ -80,6 +83,12 @@ class esp8266_wifi : public SingletonTemplate<esp8266_wifi>
 		uint16_t esp8266_waitFor(uint8_t *string);
 		bool esp8266_watchdog_disable();
 		bool esp8266_baudrate_change(uint16_t baudRate);
+		uint8_t esp_uartReceive( uint8_t *rxbuf, uint32_t buflen,TRANSFER_BLOCK_Type flag, bool multiline = false);
+		uint8_t esp8266_getReply(int8_t *send, bool multiline = false);
+		bool esp8266_sendCheckReply(int8_t *send, int8_t *reply, bool multiline = false);
+		uint32_t esp8266_send(int8_t *txbuf, uint8_t datalen);
+		bool esp8266_sendData(int8_t *data,uint8_t datalen);
+		void esp8266_flushin();
     private:
 		esp8266_wifi()  ///< Private constructor of this Singleton class
 		{
@@ -87,6 +96,7 @@ class esp8266_wifi : public SingletonTemplate<esp8266_wifi>
 		}
 		friend class SingletonTemplate<esp8266_wifi>;  ///< Friend class used for Singleton Template
 		LPC_UART_TypeDef* mUARTx = NULL;
+		uint8_t replybuffer[MAX_BUFFER_SIZE]={0};
 };
 
 
